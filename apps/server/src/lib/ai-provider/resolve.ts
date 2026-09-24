@@ -5,6 +5,7 @@
  * creation quota.
  */
 import { createGoogle } from "@ai-sdk/google";
+import { createOpenAI } from "@ai-sdk/openai";
 import { and, db, eq } from "@OpenDiagram/db";
 import { userAiProvider } from "@OpenDiagram/db/schema/ai";
 import { env } from "@OpenDiagram/env/server";
@@ -111,6 +112,17 @@ async function resolveUserModel(
  * for a cache that only its own user's requests could hit.
  */
 function resolvePlatformModel(): ResolvedModel | null {
+  // Local self-hosting can reuse the already authenticated 9router endpoint.
+  if (env.CUSTOM_AI_API_KEY && env.CUSTOM_AI_BASE_URL && env.CUSTOM_AI_MODEL) {
+    const openai = createOpenAI({ apiKey: env.CUSTOM_AI_API_KEY, baseURL: env.CUSTOM_AI_BASE_URL });
+    return {
+      model: openai.chat(env.CUSTOM_AI_MODEL),
+      source: "platform",
+      provider: "openai",
+      modelId: env.CUSTOM_AI_MODEL,
+      countsAgainstQuota: true,
+    };
+  }
   if (!env.GOOGLE_GENERATIVE_AI_API_KEY) return null;
   const google = createGoogle({
     apiKey: env.GOOGLE_GENERATIVE_AI_API_KEY,

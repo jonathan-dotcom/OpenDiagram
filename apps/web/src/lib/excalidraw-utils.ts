@@ -140,31 +140,10 @@ export interface ApplyDiagramResult {
   frameId: string | null;
 }
 
-/**
- * Pushes a generated diagram onto the Excalidraw canvas **additively**: the
- * existing scene is kept, the new frame is placed in fresh space to its right,
- * and the camera pans to it. `replaceFrameId` swaps a previously generated
- * diagram (its frame + members) in place instead, used when the agent updates
- * an existing diagram.
- *
- * `rawElements` are pre-formed icon clones (already full Excalidraw element
- * JSON); `convertToExcalidrawElements` accepts them alongside skeletons and
- * normalizes both consistently, regenerating every id so repeated generations
- * can never collide.
- */
-export async function applyDiagramToCanvas(
-  api: ExcalidrawImperativeAPI,
-  skeletons: RenderSkeleton[],
-  rawElements: unknown[],
-  opts?: { replaceFrameId?: string | null },
-): Promise<ApplyDiagramResult> {
-  // Dynamic import: @excalidraw/excalidraw touches `window` at module scope,
-  // so it can only be evaluated in the browser, never during Next.js SSR.
+/** Convert an agent's server render plan to normalized Excalidraw elements. */
+export async function renderAgentElements(skeletons: RenderSkeleton[], rawElements: unknown[]) {
+  // Excalidraw is browser-only, including its file export normalizer.
   const { convertToExcalidrawElements, restoreElements } = await import("@excalidraw/excalidraw");
-  // restoreElements applies the same normalization a page reload does. Without
-  // it, freshly inserted elements occasionally exist in the scene (selectable,
-  // saved to drafts) but are skipped by the static canvas paint until reload —
-  // observed with larger diagrams appended to an already-populated canvas.
   const generated = convertToExcalidrawElements([
     ...skeletons.map(toElementSkeleton),
     ...(rawElements as ExcalidrawElementSkeleton[]),
@@ -187,6 +166,16 @@ export async function applyDiagramToCanvas(
     });
   }
 
+  return converted;
+}
+
+export async function applyDiagramToCanvas(
+  api: ExcalidrawImperativeAPI,
+  skeletons: RenderSkeleton[],
+  rawElements: unknown[],
+  opts?: { replaceFrameId?: string | null },
+): Promise<ApplyDiagramResult> {
+  const converted = await renderAgentElements(skeletons, rawElements);
   const scene = api.getSceneElements();
   const oldFrame = opts?.replaceFrameId
     ? scene.find((el) => el.id === opts.replaceFrameId)
