@@ -1,4 +1,4 @@
-import { createStore, del, get, set } from "idb-keyval";
+import { createStore, del, get, set, update } from "idb-keyval";
 import type { ProjectFileType } from "@/lib/projects-client";
 
 /**
@@ -9,15 +9,8 @@ import type { ProjectFileType } from "@/lib/projects-client";
  * first pixel cost seconds. Here IndexedDB answers first and the network only
  * ever revalidates, which is the same shape Excalidraw uses in
  * `excalidraw-app/data/LocalData.ts`.
- *
- * Two stores, not one, and for the reason Excalidraw splits them: scene JSON is
- * small and rewritten on every edit, while image blobs are large and immutable
- * once written. Keying blobs separately by their own id keeps a 800 kB image
- * from being re-serialised every time an arrow moves, and matches how they will
- * be keyed in object storage when they move off the row entirely.
  */
 const sceneStore = createStore("opendiagram-scene-db", "scene-store");
-const blobStore = createStore("opendiagram-blob-db", "blob-store");
 
 export type LocalScene = {
   fileId: string;
@@ -29,6 +22,12 @@ export type LocalScene = {
   updatedAt: string;
   /** True while local holds edits the server has not acknowledged. */
   dirty: boolean;
+  /**
+   * Server revision this copy is known to equal, so an open at that revision
+   * needs no download. Set only from an acknowledged save or a download; any
+   * other write leaves it unset and the next open fetches.
+   */
+  sceneRev?: number | null;
 };
 
 export async function readLocalScene(fileId: string): Promise<LocalScene | null> {
@@ -58,19 +57,23 @@ export async function deleteLocalScene(fileId: string): Promise<void> {
   }
 }
 
-/** Excalidraw `BinaryFileData` keyed by its own file id. */
-export async function readLocalBlob<T>(id: string): Promise<T | null> {
+/**
+ * Record a save the server acknowledged, but only if the entry still holds
+ * what that save sent. The check and the write share one IndexedDB
+ * transaction, so an edit written in between is never marked clean, whether or
+ * not its file is still open. A missing entry gets the saved copy.
+ */
+export async function markLocalSceneSaved(
+  saved: LocalScene,
+  holdsSent: (entry: LocalScene) => boolean,
+): Promise<void> {
   try {
-    return (await get<T>(id, blobStore)) ?? null;
+    await update<LocalScene | undefined>(
+      saved.fileId,
+      (entry) => (!entry || holdsSent(entry) ? saved : entry),
+      sceneStore,
+    );
   } catch {
-    return null;
-  }
-}
-
-export async function writeLocalBlob<T>(id: string, value: T): Promise<void> {
-  try {
-    await set(id, value, blobStore);
-  } catch {
-    /* nothing useful to do */
+    // Same as writeLocalScene: an unavailable IndexedDB degrades to network-only.
   }
 }

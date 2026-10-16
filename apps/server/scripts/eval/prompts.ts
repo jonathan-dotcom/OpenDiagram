@@ -1,12 +1,15 @@
+import { noisyPrompts } from "./prompts-noisy";
+import { scalePrompts } from "./prompts-scale";
+
 /**
  * Eval prompts. `expect` lists the concepts a complete answer names, matched
- * case-insensitively at a word start against every label in the spec; `a|b`
- * means either.
- * Coverage recall = matched / expected. Empty `expect` skips the metric.
+ * case-insensitively at a word start against the drawn labels (see `coverage`
+ * in run.ts); `a|b` means either. Coverage recall = matched / expected. Empty
+ * `expect` skips the metric. `forbid` terms must appear in no label.
  */
-export type EvalPrompt = { id: string; text: string; expect: string[] };
+export type EvalPrompt = { id: string; text: string; expect: string[]; forbid?: string[] };
 
-export const prompts: EvalPrompt[] = [
+const basePrompts: EvalPrompt[] = [
   {
     id: "url-shortener",
     text: "Design a URL shortener: API, cache, database, click analytics.",
@@ -26,6 +29,16 @@ export const prompts: EvalPrompt[] = [
     id: "shop-erd",
     text: "ERD for an e-commerce store: users, products, orders, order items, payments, reviews.",
     expect: ["user", "product", "order", "item", "payment", "review"],
+  },
+  {
+    id: "vague-startup",
+    text: "Draw the architecture for my startup's app.",
+    expect: [],
+  },
+  {
+    id: "vague-chat",
+    text: "diagram for a chat app",
+    expect: [],
   },
   {
     id: "ride-hailing",
@@ -118,3 +131,5 @@ export const prompts: EvalPrompt[] = [
     ],
   },
 ];
+
+export const prompts: EvalPrompt[] = [...basePrompts, ...scalePrompts, ...noisyPrompts];

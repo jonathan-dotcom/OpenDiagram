@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef } from "react";
 import type { Dispatch, RefObject, SetStateAction } from "react";
 import { env } from "@OpenDiagram/env/web";
 import { saveGuestProjectDraft, type GuestProjectDraft } from "@/lib/guest-drafts";
-import { writeLocalScene } from "@/lib/local-scene";
+import { markLocalSceneSaved, writeLocalScene } from "@/lib/local-scene";
 import { queueProjectFilePatch } from "@/lib/project-file-sync";
 import { encodeScene, resetSceneDelta } from "@/lib/scene-delta";
 import { type SavedProjectFile } from "@/lib/projects-client";
@@ -61,6 +61,7 @@ export function useWorkspacePersistence(options: UseWorkspacePersistenceOptions)
   const saveSnapshot = useCallback(
     async (snapshot: SaveSnapshot) => {
       if (invalidatedFileIdsRef.current.has(snapshot.file.id)) return;
+      if (snapshot.file.id === activeFileRef.current?.id) setSaveStatus("saving");
       try {
         // Through the shared queue, so this coalesces with the spec and chat
         // history writes the agent fires against the same row (three requests per
@@ -78,23 +79,40 @@ export function useWorkspacePersistence(options: UseWorkspacePersistenceOptions)
           "meta",
         );
         if (invalidatedFileIdsRef.current.has(snapshot.file.id)) return;
-        if (snapshot.file.id === activeFileRef.current?.id) {
+        const isActive = snapshot.file.id === activeFileRef.current?.id;
+        const isLatest = isActive && snapshot.version === pendingVersionRef.current;
+        if (isActive) {
           lastSavedVersionRef.current = String(snapshot.version);
-          if (snapshot.version === pendingVersionRef.current) dirtyRef.current = false;
-          setSaveStatus("saved");
+          if (isLatest) dirtyRef.current = false;
+          setSaveStatus(dirtyRef.current ? "unsaved" : "saved");
         }
         // Clear the local dirty flag only once the server has taken the write,
         // and stamp the server's own updatedAt so the next open compares the
         // two copies on the same clock rather than on this device's.
-        void writeLocalScene({
-          fileId: snapshot.file.id,
-          projectId,
-          type: snapshot.file.type,
-          scene: snapshot.scene,
-          content: snapshot.content,
-          updatedAt: updated.updatedAt,
-          dirty: false,
-        });
+        //
+        // Only if the entry still holds this snapshot. A newer edit has already
+        // written its own dirty entry, and the queue can merge a newer scene
+        // (manual Save) into this request; marking either clean would hide it
+        // from reload recovery or pair it with the wrong revision.
+        void markLocalSceneSaved(
+          {
+            fileId: snapshot.file.id,
+            projectId,
+            type: snapshot.file.type,
+            scene: snapshot.scene,
+            content: snapshot.content,
+            updatedAt: updated.updatedAt,
+            dirty: false,
+            // What lets the next open skip the download. Diagrams only: a doc
+            // save echoes the untouched scene revision, which no doc entry holds.
+            sceneRev: snapshot.file.type === "diagram" ? (updated.sceneRev ?? null) : null,
+          },
+          (entry) =>
+            entry.type === snapshot.file.type &&
+            (entry.type === "diagram"
+              ? sceneElementsVersion(sceneElementsOf(entry.scene)) === snapshot.version
+              : entry.content === snapshot.content),
+        );
         upsertStoredFile(toSidebarFile(updated));
       } catch {
         // The local copy stays dirty, so the edit is still on disk and will be
@@ -157,7 +175,7 @@ export function useWorkspacePersistence(options: UseWorkspacePersistenceOptions)
 
   const scheduleAutosave = useCallback(() => {
     dirtyRef.current = true;
-    setSaveStatus("saving");
+    setSaveStatus("unsaved");
     const snapshot = snapshotCurrent();
     // Assigned before either guard below returns, so whichever save eventually runs
     // sends the newest state rather than the state that armed the timer.
@@ -176,6 +194,7 @@ export function useWorkspacePersistence(options: UseWorkspacePersistenceOptions)
         content: snapshot.content,
         updatedAt: new Date().toISOString(),
         dirty: true,
+        sceneRev: null,
       });
     }
 
@@ -206,15 +225,26 @@ export function useWorkspacePersistence(options: UseWorkspacePersistenceOptions)
       sceneRef.current = scene;
 
       const currentDraft = draftRef.current;
-      if (currentDraft && !isSignedInRef.current) {
+      // Not gated on signed-out: until promotion succeeds the draft is the only
+      // copy, and a retry after a failed one promotes whatever it holds.
+      if (currentDraft) {
         lastSavedVersionRef.current = version;
         updateGuestDraft(currentDraft, currentFileIdRef.current, { scene }, draftRef, setDraft);
       } else if (activeFileRef.current?.type === "diagram" && isSignedInRef.current) {
+        // Already queued. Excalidraw fires onChange on focus and pointer changes
+        // too; rescheduling on those flipped a manual save's "saving" straight
+        // back to "unsaved" in the same render, so the click looked ignored.
+        // Still refresh the queued snapshot, or a pan or zoom made inside the
+        // autosave window is lost: the saved viewport is what a reload opens on.
+        if (version === pendingVersionRef.current) {
+          if (dirtyRef.current) snapshotRef.current = snapshotCurrent();
+          return;
+        }
         pendingVersionRef.current = version;
         scheduleAutosave();
       }
     },
-    [currentFileIdRef, draftRef, scheduleAutosave, setDraft],
+    [currentFileIdRef, draftRef, scheduleAutosave, setDraft, snapshotCurrent],
   );
 
   const handleDocChange = useCallback(
@@ -223,7 +253,7 @@ export function useWorkspacePersistence(options: UseWorkspacePersistenceOptions)
       contentRef.current = value;
       setDocContent(value);
       const currentDraft = draftRef.current;
-      if (currentDraft && !isSignedInRef.current) {
+      if (currentDraft) {
         updateGuestDraft(
           currentDraft,
           currentFileIdRef.current,
@@ -334,8 +364,12 @@ export function useWorkspacePersistence(options: UseWorkspacePersistenceOptions)
   const restoreFileAutosave = useCallback((fileId: string) => {
     invalidatedFileIdsRef.current.delete(fileId);
   }, []);
+  // The version too, not only the flag: Excalidraw fires onChange on every pointer
+  // and selection change, and a stale version re-dirtied the scene right after a
+  // manual save and sent a redundant PATCH one interval later.
   const markClean = useCallback(() => {
     dirtyRef.current = false;
+    lastSavedVersionRef.current = pendingVersionRef.current;
   }, []);
 
   return {
@@ -368,4 +402,9 @@ function updateGuestDraft(
   draftRef.current = nextDraft;
   saveGuestProjectDraft(nextDraft);
   setDraft(nextDraft);
+}
+
+function sceneElementsOf(scene: unknown): readonly unknown[] {
+  const elements = (scene as { elements?: unknown } | null)?.elements;
+  return Array.isArray(elements) ? elements : [];
 }

@@ -1,0 +1,23 @@
+name: opendiagram-local-storage
+
+services:
+  storage:
+    image: rustfs/rustfs@sha256:1803faef57627e2d9c2e7d89d655d712ddded5389040054987163043fecb6a3c
+    container_name: opendiagram-local-storage
+    network_mode: bridge
+    command: /data
+    ports:
+      - "127.0.0.1:19000:9000"
+    env_file:
+      - .env.storage.local
+    environment:
+      RUSTFS_ADDRESS: ":9000"
+      RUSTFS_CONSOLE_ENABLE: "false"
+      RUSTFS_OBS_LOGGER_LEVEL: error
+    volumes:
+      - scenes:/data
+    restart: unless-stopped
+
+volumes:
+  scenes:
+    name: opendiagram_local_s3data

@@ -4,7 +4,13 @@ import { plan } from "@OpenDiagram/db/schema/billing";
 import { env } from "@OpenDiagram/env/server";
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
-import { sendPasswordResetMail, sendVerificationMail, sendWelcomeMail } from "./email";
+import {
+  sendPasswordChangedMail,
+  sendPasswordResetMail,
+  sendVerificationMail,
+  sendWelcomeMail,
+} from "./email";
+import { captureSignup } from "./signup-event";
 
 /** First entry of CORS_ORIGIN - the web app, which owns every user-facing page. */
 function webOrigin(): string {
@@ -17,14 +23,41 @@ function withCallback(url: string, callbackURL: string): string {
   return link.toString();
 }
 
-/** Read credits from the plan table, not hardcoded -- the grant changes over time. */
-async function signupCredits(): Promise<number> {
+async function welcome(user: {
+  email: string;
+  name?: string | null;
+  createdAt: Date;
+}): Promise<void> {
+  await sendWelcomeMail({
+    to: user.email,
+    name: user.name,
+    dashboardUrl: `${webOrigin()}/dashboard`,
+    credits: await welcomeCredits(user.createdAt),
+    site: webOrigin(),
+  });
+}
+
+/**
+ * Read from the plan table, not hardcoded: the grant changes over time. The grant
+ * only covers the first billing month after signup, so someone verifying later
+ * gets the monthly allowance and the mail has to say so. The month end must match
+ * `addMonthsUtc` in the server's `lib/quota/actor.ts` (same UTC day, clamped to
+ * the target month's length), or the mail and the quota disagree near the edge.
+ */
+async function welcomeCredits(createdAt: Date): Promise<number> {
   const [row] = await db
     .select({ signupGrant: plan.signupGrant, monthlyCredits: plan.monthlyCredits })
     .from(plan)
     .where(eq(plan.id, "free"))
     .limit(1);
-  return row ? row.signupGrant || row.monthlyCredits : 0;
+  if (!row) return 0;
+  const year = createdAt.getUTCFullYear();
+  const month = createdAt.getUTCMonth() + 1;
+  const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+  const firstMonthEnd = new Date(createdAt);
+  firstMonthEnd.setUTCFullYear(year, month, Math.min(createdAt.getUTCDate(), lastDay));
+  const inFirstMonth = Date.now() < firstMonthEnd.getTime();
+  return inFirstMonth && row.signupGrant > 0 ? row.signupGrant : row.monthlyCredits;
 }
 
 export function createAuth() {
@@ -73,7 +106,10 @@ export function createAuth() {
       // The landing page comes from the caller's `redirectTo`, so Better Auth
       // builds this link correctly without a rewrite here.
       sendResetPassword: async ({ user, url }) => {
-        await sendPasswordResetMail({ to: user.email, name: user.name, url });
+        await sendPasswordResetMail({ to: user.email, name: user.name, url, site: webOrigin() });
+      },
+      onPasswordReset: async ({ user }) => {
+        await sendPasswordChangedMail({ to: user.email, name: user.name, site: webOrigin() });
       },
     },
     // Soft gate, not a wall. `requireEmailVerification` would lock out pre-existing
@@ -90,18 +126,12 @@ export function createAuth() {
           // Better Auth builds the link against the API origin and defaults its
           // callbackURL to "/", which lands the user on the bare API host.
           url: withCallback(url, `${webOrigin()}/dashboard?verified=1`),
+          site: webOrigin(),
         });
       },
       // Welcome lands after verification, not at signup: two mails racing in the
       // inbox buries the one that actually unlocks the account.
-      afterEmailVerification: async (user) => {
-        await sendWelcomeMail({
-          to: user.email,
-          name: user.name,
-          dashboardUrl: `${webOrigin()}/dashboard`,
-          credits: await signupCredits(),
-        });
-      },
+      afterEmailVerification: welcome,
     },
     // `storage: "database"` because Cloud Run scales to zero -- in-memory counters
     // are per-instance and wiped by every cold start.
@@ -125,6 +155,23 @@ export function createAuth() {
       encryptOAuthTokens: true,
     },
     socialProviders: githubProvider,
+    // Runs after the signup transaction commits (better-auth queues create.after
+    // hooks), so a rolled-back signup never reports. `/sign-up/email` or the
+    // OAuth callback, whose `:id` param is the provider.
+    databaseHooks: {
+      user: {
+        create: {
+          after: async (user, ctx) => {
+            const method = ctx?.path.startsWith("/sign-up")
+              ? "email"
+              : (ctx?.params?.id ?? "unknown");
+            await captureSignup(user, method);
+            // GitHub sign-ups arrive verified and never reach afterEmailVerification.
+            if (user.emailVerified) await welcome(user);
+          },
+        },
+      },
+    },
     secret: env.BETTER_AUTH_SECRET,
     baseURL: env.BETTER_AUTH_URL,
     advanced: {

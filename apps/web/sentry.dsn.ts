@@ -1,7 +1,9 @@
 import { env } from "@OpenDiagram/env/web";
 
-// Local installation: do not upload diagrams or errors to the vendor's Sentry project.
-export const WEB_SENTRY_DSN = "";
+// Web project DSN. Unset means no reporting. It still ships in the client bundle,
+// so it is public; env-only so a clone of the repo doesn't report into our project.
+// Single source of truth for the three Sentry runtime configs and the evlog drain.
+export const WEB_SENTRY_DSN = env.NEXT_PUBLIC_SENTRY_DSN;
 
 // Tunable without a code change; defaults to 1 when the env var is unset.
 export const WEB_SENTRY_TRACES_SAMPLE_RATE = env.NEXT_PUBLIC_SENTRY_TRACES_SAMPLE_RATE;

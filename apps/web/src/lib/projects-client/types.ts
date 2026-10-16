@@ -1,5 +1,3 @@
-import type { AiProviderUsage } from "../ai-provider-usage";
-
 export type SavedProject = {
   id: string;
   name: string;
@@ -13,7 +11,7 @@ export type SavedProject = {
 
 export type ProjectFileType = "diagram" | "doc";
 
-export type RepositoryDocProvenance = {
+type RepositoryDocProvenance = {
   kind: "repo_documentation";
   generated: true;
   generatorVersion: "repo-doc-stub-v1";
@@ -34,8 +32,13 @@ export type SavedProjectFile = {
   spec?: RepositoryDocProvenance | unknown;
   content?: unknown;
   history?: unknown[];
-  /** Revision of the stored scene. Only what `lib/scene-delta.ts` reads it for. */
+  /** Revision of the stored scene: the delta baseline and the IndexedDB cache key. */
   sceneRev?: number | null;
+  /**
+   * Presigned R2 URL of the scene, set by GET in place of `scene` once the scene
+   * lives in object storage. Short-lived: use it right away.
+   */
+  sceneUrl?: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -58,7 +61,7 @@ export type CreateProjectFileInput = {
 
 export type UpdateProjectFileInput = Partial<CreateProjectFileInput>;
 
-export type ProjectChatSource = {
+type ProjectChatSource = {
   id: string;
   title: string;
   sourceType: string;
@@ -71,10 +74,9 @@ export type ProjectChatResult = {
   answer: string;
   sources: ProjectChatSource[];
   provider?: "local";
-  aiProvider?: AiProviderUsage;
 };
 
-export type RepoGenerationTask = {
+type RepoGenerationTask = {
   id: string;
   type: ProjectFileType;
   name: string;
@@ -98,6 +100,8 @@ export type RepoGenerationJob = {
 
 export type CreationQuota = {
   actorType: "guest" | "user";
+  /** `guest` on a `user` actor means the account has not verified its email yet. */
+  planId: "guest" | "free" | "pro";
   limit: number;
   used: number;
   remaining: number;

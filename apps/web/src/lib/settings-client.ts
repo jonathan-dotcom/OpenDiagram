@@ -1,6 +1,6 @@
 import { env } from "@OpenDiagram/env/web";
 
-export type CatalogModel = { id: string; label: string };
+type CatalogModel = { id: string; label: string };
 
 /** Frontend-only: badge Gemini + DeepSeek models in pickers. */
 export function isRecommendedModel(modelId: string, label?: string): boolean {
@@ -36,10 +36,34 @@ export type ProviderModelOption = {
   label: string;
   providerId: string;
   providerLabel: string;
-  modelId: string;
+  /** Absent only on the Standard entry, where the server picks the model. */
+  modelId?: string;
   modelLabel: string;
   isDefault: boolean;
+  /** Secondary line in the picker; defaults to `label`. */
+  hint?: string;
 };
+
+/**
+ * The platform model, listed beside BYOK ones. Its providerId is the server's
+ * PLATFORM_PROVIDER_ID (resolve.ts): sending no providerId instead would run on a
+ * saved default key. Not named "Picasso", the assistant, which runs on any model.
+ */
+export const STANDARD_MODEL_OPTION: ProviderModelOption = {
+  id: "platform",
+  label: "Standard",
+  providerId: "platform",
+  providerLabel: "OpenDiagram",
+  modelLabel: "Standard",
+  isDefault: false,
+  hint: "Uses your plan credits",
+};
+
+/** What the model pickers list. Empty without BYOK: one model is not a choice. */
+export function pickerModelOptions(settings: AiSettings): ProviderModelOption[] {
+  const byok = providerModelOptions(settings);
+  return byok.length ? [STANDARD_MODEL_OPTION, ...byok] : [];
+}
 
 const BASE = `${env.NEXT_PUBLIC_SERVER_URL}/api/settings/ai`;
 
@@ -120,7 +144,7 @@ export async function updateProvider(
   clearAiSettingsCache();
 }
 
-export function providerModelOptions(settings: AiSettings): ProviderModelOption[] {
+function providerModelOptions(settings: AiSettings): ProviderModelOption[] {
   const catalog = new Map(settings.catalog.map((provider) => [provider.id, provider]));
 
   return settings.providers.flatMap((provider) => {

@@ -12,7 +12,9 @@ export class CreationQuotaExceededError extends Error {
           ? "You've hit today's creation limit. It resets tomorrow."
           : snapshot.actorType === "guest"
             ? `You've used all ${snapshot.limit} free creation requests. Sign in for more.`
-            : `You've used all ${snapshot.limit} creation requests for this billing period.`,
+            : snapshot.planId === "guest"
+              ? `You've used all ${snapshot.limit} starter creation requests. Verify your email to unlock more.`
+              : `You've used all ${snapshot.limit} creation requests for this billing period.`,
     );
     this.name = "CreationQuotaExceededError";
     this.snapshot = snapshot;
@@ -40,14 +42,6 @@ export function applyCreationQuotaHeaders(c: Context, snapshot: CreationQuotaSna
   c.header("X-CreationQuota-Limit", String(snapshot.limit));
   c.header("X-CreationQuota-Used", String(snapshot.used));
   c.header("X-CreationQuota-Remaining", String(snapshot.remaining));
-}
-
-export function isQuotaError(error: unknown): boolean {
-  return (
-    error instanceof CreationQuotaExceededError ||
-    error instanceof CostCeilingExceededError ||
-    error instanceof AiRateLimitError
-  );
 }
 
 /**

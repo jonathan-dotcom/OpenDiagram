@@ -57,7 +57,7 @@ export function labelWrapWidth(iconSize: number): number {
 }
 
 /** Width of the longest wrapped line; 0 for no lines. */
-export function widestLine(lines: string[], fontSize: number, fontFamily?: number): number {
+function widestLine(lines: string[], fontSize: number, fontFamily?: number): number {
   let widest = 0;
   for (const line of lines)
     widest = Math.max(widest, estimateTextWidth(line, fontSize, fontFamily));
@@ -196,4 +196,29 @@ export function nodeSize(
 /** Single source of truth for arrow label text (layout measures it, renderer draws it). */
 export function edgeLabelText(edge: DiagramEdge): string | undefined {
   return [edge.label, edge.protocol].filter(Boolean).join(" · ") || undefined;
+}
+
+// One-line titles wider than this split into label / sublabel lines. Sized to
+// fit in one line, "Multi-Model Data Layer - Strong & Eventual Consistency"
+// stretched its group to ~800px around a 100px column and scattered the layout.
+const TITLE_WRAP = 320;
+
+/**
+ * A container's name as drawn: its lines and the box they need. The renderer
+ * draws `lines`, ELK sizes the container to `width` and pads its top for
+ * `height`, and the router keeps routes off it; all three read this.
+ */
+export function containerTitleBox(
+  c: { label: string; sublabel?: string },
+  theme: Theme,
+): { lines: string[]; width: number; height: number } {
+  const { size } = theme.text.containerLabel;
+  const measure = (text: string) => estimateTextWidth(text, size, theme.fontFamily);
+  const one = c.sublabel ? `${c.label} - ${c.sublabel}` : c.label;
+  const lines = c.sublabel && measure(one) > TITLE_WRAP ? [c.label, c.sublabel] : [one];
+  return {
+    lines,
+    width: Math.ceil(Math.max(...lines.map(measure))),
+    height: lines.length * Math.ceil(size * 1.3),
+  };
 }

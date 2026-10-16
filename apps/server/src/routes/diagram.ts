@@ -4,8 +4,9 @@ import type { EvlogVariables } from "evlog/hono";
 import { Hono } from "hono";
 import { z } from "zod";
 import { streamDiagramChat } from "../lib/agent/chat-stream";
+import { inlineTextFiles } from "../lib/agent/inline-text-files";
 import { buildCanvasContext, buildSystemPrompt } from "../lib/agent/prompt";
-import { askUserTool, createDrawDiagramTool } from "../lib/agent/tools";
+import { askUserTool, createDrawDiagramTool, createDrawSystemTool } from "../lib/agent/tools";
 import { enforceAiQuota, quotaErrorResponse } from "../lib/quota";
 import { getRequestSession } from "../lib/session";
 import { ModelSelectionError, resolveModel } from "../lib/ai-provider/resolve";
@@ -28,6 +29,10 @@ const chatRequestSchema = z.object({
   // `resolveModel` against their own rows, not here.
   providerId: z.string().min(1).max(64).optional(),
   modelId: z.string().min(1).max(120).optional(),
+  // One PostHog AI session per persisted thread. A new thread's row is only
+  // written after its first turn, so that turn falls back to the useChat `id`.
+  conversationId: z.string().min(1).max(200).optional(),
+  id: z.string().min(1).max(200).optional(),
 });
 
 /**
@@ -62,11 +67,20 @@ diagramRoute.post("/chat", async (c) => {
   if (!parsed.success) {
     return c.json({ error: "Invalid request", issues: parsed.error.issues }, 400);
   }
-  const { messages, providerId, modelId, diagrams = [], theme: themeName = "sketch" } = parsed.data;
+  const {
+    messages,
+    providerId,
+    modelId,
+    diagrams = [],
+    theme: themeName = "sketch",
+    conversationId,
+    id: chatId,
+  } = parsed.data;
 
   const tools = {
     ask_user: askUserTool,
     draw_diagram: createDrawDiagramTool(log, themes[themeName], diagrams),
+    draw_system: createDrawSystemTool(log, themes[themeName]),
   };
 
   // convertToModelMessages throws on malformed UIMessage shapes -- that's a bad
@@ -82,7 +96,10 @@ diagramRoute.post("/chat", async (c) => {
     //
     // With `tools` passed, history collapses to the compact summary the tool
     // already declares, which is all the model ever needed to read back.
-    modelMessages = await convertToModelMessages(messages as unknown as UIMessage[], { tools });
+    modelMessages = await convertToModelMessages(
+      inlineTextFiles(messages) as unknown as UIMessage[],
+      { tools },
+    );
   } catch (err) {
     return c.json(
       { error: "Invalid messages", detail: err instanceof Error ? err.message : String(err) },
@@ -132,8 +149,15 @@ diagramRoute.post("/chat", async (c) => {
         { role: "user" as const, content: buildCanvasContext(diagrams) },
         ...modelMessages,
       ],
+      originalMessages: messages as unknown as UIMessage[],
       tools,
       grant,
+      runtimeContext: {
+        // Guests have no user id; the browser's PostHog id (tracing_headers) keeps
+        // their traces on one person. Client-supplied, so analytics only.
+        distinctId: userId ?? c.req.header("x-posthog-distinct-id")?.slice(0, 200),
+        sessionId: `diagram:${conversationId ?? chatId ?? crypto.randomUUID()}`,
+      },
       meta: {
         canvasDiagrams: diagrams.length,
         theme: themeName,

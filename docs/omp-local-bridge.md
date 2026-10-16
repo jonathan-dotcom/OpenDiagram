@@ -1,21 +1,34 @@
 # Local OMP diagram bridge
 
-This fork adds a local, file-backed path from OMP to OpenDiagram. OMP can create and revise diagrams through the existing AI endpoint, open the result in the Excalidraw editor, and download an editable `.excalidraw` file without clicking through the dashboard.
+The bridge transports OMP requests through OpenDiagram's native chat endpoint. The upstream agent chooses tools, plans views, validates specs, lays out diagrams, and renders them. The bridge does not choose coordinates or replace the system prompt, layout engine, or renderer.
 
 ## Use it
 
-From the repository root, with the local API and web services running:
+Run these commands from the repository root while the API and web services are running:
 
 ```bash
-bun scripts/omp-diagram.ts create 'Browser calls API; API reads PostgreSQL. Draw three nodes and two arrows.'
-bun scripts/omp-diagram.ts revise <id> 'Add a cache between API and PostgreSQL.'
+bun scripts/omp-diagram.ts create -
+bun scripts/omp-diagram.ts revise <id> -
+bun scripts/omp-diagram.ts answer <id> -
 bun scripts/omp-diagram.ts open <id>
 bun scripts/omp-diagram.ts export <id> /path/to/diagram.opendiagram.json
-bun test scripts/omp-diagram.test.ts
+bun test scripts/omp-diagram.test.ts scripts/omp-diagram-native.test.ts
 ```
 
-For a confidential or multiline prompt, use `create -` or `revise <id> -` and send the prompt on standard input rather than placing it in a command argument. Creation and revision print JSON containing the diagram id, summary, editor URL, and download URL. Open the editor URL using OMP Browser Relay, then inspect the rendered canvas. Open the download URL in that browser to save an editable `.excalidraw` file in its Downloads directory. The JSON export is the semantic spec plus render plan, not an Excalidraw file.
+Send the brief or answer on standard input. Describe components, relationships, intent, and constraints. Do not supply hand-authored element coordinates or force an architecture into one diagram. The native agent selects `draw_system` for architecture and `draw_diagram` for standalone flowcharts, ERDs, BPMN, and sequences. A system can produce an overview and several flow views; the bridge retains all of them.
 
-The bridge stores records in `data/agent/` by default. That directory is gitignored. The server reads it only when `LOCAL_AGENT_DATA_DIR` points to it; otherwise `/api/local-agent/:id` returns 404. Set the variable on a loopback-only server. Diagram ids must be UUIDs, and a revision is saved only if the model returns a completed draw for the existing id. The CLI rejects non-local API endpoints.
+Creation, revision, and answers print JSON with `id`, `revision`, `status`, `views`, `open`, and `download`. When `status` is `needs_input`, present `question.question` and `question.options`, then use `answer` with the response. This resumes the native `ask_user` tool in the same conversation. Do not retry creation or invent an answer. Revisions retain the native message history and send the most recent eight diagram specs, matching the web client.
 
-Opening a record for the first time creates a guest draft in that browser. Opening it again creates a **new** draft so edits made in the browser are not silently overwritten by a CLI revision. Those browser edits do not flow back into the CLI record. Guest drafts belong to the browser profile; use the same profile when returning to one. This fork keeps the rest of the upstream application intact rather than removing its authentication, billing, or project code.
+Open `open` using OMP Browser Relay and inspect the rendered canvas. The import page uses the actual native Whiteboard and `applyDiagramToCanvas` for every view. It transfers diagram metadata and chat history into a guest draft so the native editor can continue the conversation. The `download` URL uses Excalidraw's serializer to export the complete canvas as an editable `.excalidraw` file. Verify the real download before claiming export. The CLI JSON export contains semantic specs, render plans, and conversation data; it is not an Excalidraw file.
+
+## Persistence boundary
+
+Records and prompts stay in gitignored `data/agent/`. The API serves them only when `LOCAL_AGENT_DATA_DIR` is configured. Keep the API on loopback; the CLI rejects non-local endpoints. Existing single-diagram records remain readable.
+
+Opening an existing record creates a new guest draft when one already exists, rather than overwriting browser edits. Browser edits do not synchronize back to the CLI record. After making browser edits, continue in that native workspace, or explicitly reopen the CLI branch as a separate draft. Use the same browser profile to retain guest drafts.
+
+## Local scene storage
+
+Current upstream stores signed-in canvas scenes in an S3-compatible object store, not PostgreSQL. `compose.local-storage.yml` runs RustFS on `127.0.0.1:19000` using the persistent `opendiagram_local_s3data` Docker volume and private credentials from gitignored `.env.storage.local`. The API's private `apps/server/.env` contains matching `S3_*` settings. The bucket is `opendiagram-scenes`; browser read CORS permits only the local web origins. Do not commit either environment file.
+
+Start storage with `docker compose -f compose.local-storage.yml up -d`. The compose service uses Docker's existing bridge, avoiding allocation of another private subnet. Guest drafts still use the upstream browser-local IndexedDB store. Before applying database migrations to an older installation, back up PostgreSQL and migrate any existing scene data to object storage before the upstream migration drops the old scene column.

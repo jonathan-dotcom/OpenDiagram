@@ -59,3 +59,9 @@ COGNEE_INTEGRATION_PLAN.md
 # local agent tooling
 opencode.json
 /data/agent/
+
+# launch videos (local renders, large binaries)
+brag-output/
+
+# Terraform provider cache; *.tf and the lock file are committed, state lives in HCP.
+infra/.terraform/
